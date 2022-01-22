@@ -1,0 +1,250 @@
+---
+title: "week 2"
+author: "LS1336"
+date: "2022/1/22"
+output: html_document
+---
+## 5.1 Tidying a document-term matrix
+
+document-term matrix is a matrix where:
+
+- each row represents one document (such as a book or article),
+- each column represents one term, and
+- each value contains the number of appearances of that term in that document.
+
+DTMs are usually implemented as sparse matrices sinc most pairings of document and term do not occur
+
+- tidy() turns a document-term matrix into a tidy data frame.
+- cast() turns a tidy one-term-per-row data frame into a matrix
+
+```{r}
+library(tm)
+data("AssociatedPress", package = "topicmodels")
+AssociatedPress
+```
+Term refers to distinct word, we could access the word by using following code
+
+```{r}
+terms <- Terms(AssociatedPress)
+head(terms)
+```
+
+To analyze this data, turn it into a data frame using tidy()
+
+```{r}
+library(dplyr)
+library(tidytext)
+ap_td <- tidy(AssociatedPress)
+# only the non-zero values are included in the tidied output
+ap_td
+```
+
+
+### Perform sentiment analysis
+```{r}
+ap_sentiments <- ap_td %>%
+  inner_join(get_sentiments("bing"), by = c(term = "word"))
+
+library(ggplot2)
+
+ap_sentiments %>%
+  count(sentiment, term, wt = count) %>%
+  ungroup() %>%
+  filter(n >= 200) %>%
+  mutate(n = ifelse(sentiment == "negative", -n, n)) %>%
+  mutate(term = reorder(term, n)) %>%
+  ggplot(aes(n, term, fill = sentiment)) +
+  geom_col() +
+  labs(x = "Contribution to sentiment", y = NULL)
+```
+
+the data could also be converted to a dfm
+
+```{r}
+data("data_corpus_inaugural", package = "quanteda")
+
+inaug_dfm <- data_corpus_inaugural %>%
+  quanteda::tokens() %>%
+  quanteda::dfm(verbose = FALSE)
+
+# Change to tyde format
+inaug_td <- tidy(inaug_dfm)
+```
+
+
+```{r}
+inaug_tf_idf <- inaug_td %>%
+  bind_tf_idf(term, document, count) %>%
+  arrange(desc(tf_idf))
+head(inaug_tf_idf)
+```
+
+
+```{r}
+library(tidyr)
+
+year_term_counts <- inaug_td %>%
+  # extract year using regular expresskl 
+  extract(document, "year", "(\\d+)", convert = TRUE) %>%
+  # complete function fill missing value with 0
+  complete(year, term, fill = list(count = 0)) %>%
+  group_by(year) %>%
+  mutate(year_total = sum(count))
+head(year_term_counts)
+
+```
+
+# 5.2 Casting tidy text data into a matrix
+
+The cast_dtm() function cast a tidy data back into a document-term matrix
+```{r}
+head(ap_td)
+```
+
+
+```{r}
+ap_td %>%
+  cast_dtm(document, term, count)
+```
+
+
+# 5.3 Tidying corpus objects with metadata
+
+A Corpus stores text alongside metadata, which may include an ID, date/time, title, or language for each document.
+Here is the example for a corpus
+
+```{r}
+data("acq")
+acq
+```
+
+Therefore a tidy() function could convert a corpus into a tidy data.
+
+```{r}
+acq_td <- tidy(acq)
+head(acq_td)
+```
+
+
+```{r}
+data(stop_words)
+
+acq_tokens <- acq_td %>%
+  # remove places
+  select(-places) %>%
+  # get tokenized word
+  unnest_tokens(word, text) %>%
+  # remove stop word
+  anti_join(stop_words, by = "word")
+
+# most common words
+acq_tokens %>%
+  count(word, sort = TRUE) %>% 
+  filter(n > 30)
+```
+```{r}
+# get most common word 
+acq_tokens %>%
+  count(word, sort = TRUE) %>% 
+  filter(n > 30)
+```
+
+# 6 Topic modeling
+Latent Dirichlet allocation (LDA) treats each document as a mixture of topics, and each topic as a mixture of words.
+
+- Every document is a mixture of topics.
+a two-topic model can be described as a combination of 90 % topic A + 10 % topic B
+
+- Every topic is a mixture of words.
+set k = 2 create a two topic LDA model
+
+```{r}
+library(topicmodels)
+data("AssociatedPress")
+ap_lda <- LDA(AssociatedPress, k = 2, control = list(seed = 1234))
+ap_lda
+```
+
+beta represents per-topic-per-word probabilities, a term aaron  has a 1.686917e-12 probability of being generated from topic 1, but a 3.895941e-05	probability of being generated from topic 2.
+
+```{r}
+ap_topics <- tidy(ap_lda, matrix = "beta")
+head(ap_topics)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+ap_top_terms <- ap_topics %>%
+  group_by(topic) %>%
+  # choose term has highest probability
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+ap_top_terms
+```
+
+
+```{r}
+ap_top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+log ratio could show the difference in $\beta$ between topic 1 and topic 2 which is defined as log($\frac{\beta_2}{\beta1}$)
+
+```{r}
+library(tidyr)
+
+beta_wide <- ap_topics %>%
+  mutate(topic = paste0("topic", topic)) %>%
+  pivot_wider(names_from = topic, values_from = beta) %>% 
+  # filter more common word
+  filter(topic1 > .001 | topic2 > .001) %>%
+  mutate(log_ratio = log2(topic2 / topic1))
+
+beta_wide
+
+```
+
+6.1.2 Document-topic probabilities measures the proportion of words from that document that are generated from that topic. The first row indicates only about 25% of the words in document 1 were generated from topic 1
+
+```{r}
+ap_documents <- tidy(ap_lda, matrix = "gamma")
+head(ap_documents)
+```
+
+Looking at document 6, the model indicates most of the word are from topic 1
+
+```{r}
+tidy(AssociatedPress) %>%
+  filter(document == 6) %>%
+  arrange(desc(count))
+```
+
+```{r}
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(readr)
+
+tweets_julia <- read_csv("data/tweets_julia.csv")
+tweets_dave <- read_csv("data/tweets_dave.csv")
+tweets <- bind_rows(tweets_julia %>% 
+                      mutate(person = "Julia"),
+                    tweets_dave %>% 
+                      mutate(person = "David")) %>%
+  mutate(timestamp = ymd_hms(timestamp))
+
+ggplot(tweets, aes(x = timestamp, fill = person)) +
+  geom_histogram(position = "identity", bins = 20, show.legend = FALSE) +
+  facet_wrap(~person, ncol = 1)
+```
+
+```
+
+
