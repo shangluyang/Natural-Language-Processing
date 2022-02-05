@@ -1,0 +1,229 @@
+---
+title: "week 4"
+output: html_document
+---
+
+```{r }
+library(tokenizers)
+library(tidyverse)
+library(tidytext)
+library(hcandersenr)
+
+the_fir_tree <- hcandersen_en %>%
+  filter(book == "The fir tree") %>%
+  pull(text)
+
+head(the_fir_tree, 9)
+```
+
+In tokenization, we take an input (a string) and a token type (a meaningful unit of text, such as a word) and split the input into pieces (tokens) 
+
+```{r cars}
+strsplit(the_fir_tree[1:2], "[^a-zA-Z0-9]+")
+```
+
+
+```{r pressure, echo=FALSE}
+library(tokenizers)
+tokenize_words(the_fir_tree[1:2])
+```
+
+The token has several types
+
+- characters
+
+- words 
+
+- sentences
+
+- lines
+
+- paragraphs
+
+- n-grams
+
+```{r}
+library(tibble)
+sample_vector <- c("Far down in the forest",
+                   "grew a pretty little fir-tree")
+sample_tibble <- tibble(text = sample_vector)
+```
+
+The tokenization achieved by using tokenize_words()
+
+```{r}
+tokenize_words(sample_vector)
+```
+
+which shows the same result compared with sample_tibble
+
+```{r}
+sample_tibble %>% 
+  unnest_tokens(word, text, token='words')
+```
+# 2.2.1 Character tokens
+
+Character tokens splits texts into characters
+
+
+```{r}
+tft_token_characters <- tokenize_characters(x = the_fir_tree,
+                                            # convert to lowercase and
+                                            lowercase = TRUE,
+                                            #strip all non-alphanumeric characters.
+                                            strip_non_alphanum = TRUE,
+                                            simplify = FALSE)
+```
+
+```{r}
+head(tft_token_characters) %>%
+  glimpse()
+```
+
+```{r}
+tokenize_characters(x = the_fir_tree,
+                    # keep space and punctuation
+                    strip_non_alphanum = FALSE) %>%
+  head() %>%
+  glimpse()
+```
+
+# 2.2.2 Word tokens
+
+```{r}
+tft_token_words <- tokenize_words(x = the_fir_tree,
+                                  lowercase = TRUE,
+                                  stopwords = NULL,
+                                  strip_punct = TRUE,
+                                  strip_numeric = FALSE)
+
+head(tft_token_words) %>%
+  glimpse()
+```
+
+```{r}
+#  find the most commonly used words in each book.
+hcandersen_en %>%
+  filter(book %in% c("The fir tree", "The little mermaid")) %>%
+  unnest_tokens(word, text) %>% 
+  count(book, word) %>% 
+  group_by(book) %>%
+  arrange(desc(n)) %>%
+  slice(1:5)
+```
+# 2.2.3 Tokenizing by n-grams
+
+ngram refers to a contiguous sequence of n items from a given sequence of text or speech, mostly it refers to a group of n words.
+
+- unigram: “Hello,” “day,” “my,” “little”
+
+- bigram: “fir tree,” “fresh air,” “to be,” “Robin Hood”
+
+- trigram: “You and I,” “please let go,” “no time like,” “the little mermaid”
+
+```{r}
+tft_token_ngram <- tokenize_ngrams(x = the_fir_tree,
+                                   lowercase = TRUE,
+                                   # determine the degree of n-gram
+                                   n = 3L,
+                                   #  minimum number of n-grams to include
+                                   n_min = 3L,
+                                   stopwords = character(),
+                                   # separator between words in the n-grams
+                                   ngram_delim = " ",
+                                   simplify = FALSE)
+```
+
+```{r}
+tft_token_ngram[[1]]
+```
+
+We can combine unigrams and bigrams in the model by adjusting n and n_min
+
+```{r}
+tft_token_ngram <- tokenize_ngrams(x = the_fir_tree,
+                                   n = 2L,
+                                   n_min = 1L)
+tft_token_ngram[[1]]
+```
+
+# 2.2.4 Lines, sentence, and paragraph tokens
+
+```{r}
+add_paragraphs <- function(data) {
+  pull(data, text) %>%
+    paste(collapse = "\n") %>%
+    tokenize_paragraphs() %>%
+    unlist() %>%
+    tibble(text = .) %>%
+    mutate(paragraph = row_number())
+}
+```
+
+```{r}
+library(janeaustenr)
+
+northangerabbey_paragraphed <- tibble(text = northangerabbey) %>%
+  mutate(chapter = cumsum(str_detect(text, "^CHAPTER "))) %>%
+  filter(chapter > 0,
+         !str_detect(text, "^CHAPTER ")) %>%
+  nest(data = text) %>%
+  mutate(data = map(data, add_paragraphs)) %>%
+  unnest(cols = c(data))
+
+glimpse(northangerabbey_paragraphed)
+```
+
+```{r}
+the_fir_tree_sentences <- the_fir_tree %>%
+  paste(collapse = " ") %>%
+  tokenize_sentences()
+
+head(the_fir_tree_sentences[[1]])
+```
+
+# 2.3 Where does tokenization break down?
+
+# 2.4 Building your own tokenizer
+
+There are two main approaches to tokenization.
+
+- Split the string up according to some rule.
+
+- Extract tokens based on some rule.
+
+## 2.4.1 Tokenize to characters, only keeping letters
+
+[:alpha:] to match letters and the quantifier {1} to only extract the first one.
+
+```{r}
+letter_tokens <- str_extract_all(
+  string = "This sentence include 2 numbers and 1 period.",
+  pattern = "[:alpha:]{1}"
+)
+letter_tokens
+```
+
+str_split can split sentences
+
+```{r}
+str_split("This isn't a sentence with hyphenated-words.", "[:space:]")
+```
+
+# Chapter 3 Stop words
+## 3.1.1 Stop word removal in R
+
+We could use anti_join to remove stopwords
+```{r}
+fir_tree <- hca_fairytales() %>%
+  filter(book == "The fir tree",
+         language == "English")
+
+tidy_fir_tree <- fir_tree %>%
+  unnest_tokens(word, text)
+
+tidy_fir_tree %>%
+  anti_join(get_stopwords(source = "snowball"))
+```
+
+
