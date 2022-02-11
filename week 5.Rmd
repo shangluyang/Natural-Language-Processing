@@ -1,0 +1,452 @@
+---
+title: "week 5"
+output: html_document
+---
+stem means different versions of one base word
+```{r}
+library(hcandersenr)
+library(tidyverse)
+library(tidytext)
+
+fir_tree <- hca_fairytales() %>%
+  filter(book == "The fir tree",
+         language == "English")
+
+tidy_fir_tree <- fir_tree %>%
+  unnest_tokens(word, text) %>%
+  anti_join(get_stopwords())
+
+tidy_fir_tree %>%
+  count(word, sort = TRUE) %>%
+  filter(str_detect(word, "^tree"))
+```
+stemming is the process of identifying the base word  for a data set of words.
+
+# 4.1 How to stem text in R
+
+```{r cars}
+library(SnowballC)
+# use wordStem to stem text in R
+tidy_fir_tree %>%
+  mutate(stem = wordStem(word)) %>%
+  count(stem, sort = TRUE)
+```
+Now we have 88 incidences of tree
+
+```{r pressure, echo=FALSE}
+stopword_df <- tribble(~language, ~two_letter,
+                       "danish",  "da",
+                       "english", "en",
+                       "french",  "fr",
+                       "german",  "de",
+                       "spanish", "es")
+stopword_df
+```
+
+```{r}
+tidy_by_lang <- hca_fairytales() %>%
+  filter(book == "The fir tree") %>%
+  select(text, language) %>%
+  mutate(language = str_to_lower(language)) %>%
+  unnest_tokens(word, text) %>% 
+  nest(data = word)
+tidy_by_lang 
+```
+```{r}
+tidy_by_lang %>%
+  inner_join(stopword_df) %>%
+  mutate(data = map2(
+    data, two_letter, ~ anti_join(.x, get_stopwords(language = .y)))
+  ) %>%
+  unnest(data) %>%
+  mutate(stem = wordStem(word, language = language)) %>%
+  group_by(language) %>%
+  count(stem) %>%
+  top_n(20, n) %>%
+  ungroup %>%
+  ggplot(aes(n, fct_reorder(stem, n), fill = language)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~language, scales = "free_y", ncol = 2) +
+  labs(x = "Frequency", y = NULL)
+```
+
+use  Porter stemmer to deal with steming
+```{r}
+library(hunspell)
+
+tidy_fir_tree %>%
+  mutate(stem = hunspell_stem(word)) %>%
+  unnest(stem) %>%
+  count(stem, sort = TRUE)
+```
+It’s possible to end up with more than one stem
+
+```{r}
+hunspell_stem("discontented")
+```
+
+# 4.2 Should you use stemming at all?
+
+Stemming reduces the feature space of text data
+
+```{r}
+library(scotus)
+
+tidy_scotus <- scotus_filtered %>%
+  unnest_tokens(word, text) %>%
+  anti_join(get_stopwords())
+
+tidy_scotus %>%
+  count(word, sort = TRUE)
+```
+
+There are 167,879 distinct words in this data set after removing stopwords, cast the data into sparse matrix, the sparsity of the matrix is 99.49%
+
+```{r}
+tidy_scotus %>% 
+  count(case_name, word) %>%
+  cast_dfm(case_name, word, n)
+```
+if we use stemming 
+```{r}
+tidy_scotus %>%  
+  mutate(stem = wordStem(word)) %>%
+  count(case_name, stem) %>%
+  cast_dfm(case_name, stem, n)
+```
+
+it could reduce the number of features
+
+# 4.3 Understand a stemming algorithm
+
+A word is made up alternating groups of vowels V and consonants C, hence a word can be written as $[C][VC]^m[V]$ The first C and the last V in brackets are optional.
+
+# 4.4 Handling punctuation when stemming
+
+It is possible to split tokens not only on white space but also on punctuation, using a regular expression
+
+```{r}
+fir_tree_counts <- fir_tree %>%
+  unnest_tokens(word, text, token = "regex", pattern = "\\s+|[[:punct:]]+") %>%
+  anti_join(get_stopwords()) %>%
+  mutate(stem = wordStem(word)) %>%
+  count(stem, sort = TRUE)
+
+fir_tree_counts
+```
+
+```{r}
+fir_tree_counts %>%
+  filter(str_detect(stem, "^tree"))
+```
+which shows the same result compared with stemming
+
+```{r}
+library(spacyr)
+spacy_initialize(entity = FALSE)
+
+fir_tree %>%
+  mutate(doc_id = paste0("doc", row_number())) %>%
+  select(doc_id, everything()) %>%
+  spacy_parse() %>%
+  anti_join(get_stopwords(), by = c("lemma" = "word")) %>%
+  count(lemma, sort = TRUE) %>%
+  top_n(20, n) %>%
+  ggplot(aes(n, fct_reorder(lemma, n))) +
+  geom_col() +
+  labs(x = "Frequency", y = NULL)
+```
+
+# 4.7 Stemming and stop words
+
+Stop word lists are usually unstemmed, so you need to remove stop words before stemming text data.
+
+The following function could be applied on stop word list to return the words that don’t have a stemmed version in the list.
+
+```{r}
+library(stopwords)
+not_stemmed_in <- function(x) {
+  x[!SnowballC::wordStem(x) %in% x]
+}
+
+not_stemmed_in(stopwords(source = "snowball"))
+```
+
+# 5.2 Understand word embeddings by finding them yourself
+
+Word embeddings are a way to represent text data as vectors of numbers based on a huge corpus of text, capturing semantic meaning from words’ context.
+
+```{r}
+tidy_complaints <- complaints %>%
+  select(complaint_id, consumer_complaint_narrative) %>%
+  unnest_tokens(word, consumer_complaint_narrative) %>%
+  add_count(word) %>%
+  filter(n >= 50) %>%
+  select(-n)
+
+nested_words <- tidy_complaints %>%
+  nest(words = c(word))
+
+nested_words
+```
+First, let’s filter out words that are used only rarely in this data set and create a nested dataframe, with one row per complaint.
+
+```{r}
+tidy_complaints <- complaints %>%
+  select(complaint_id, consumer_complaint_narrative) %>%
+  unnest_tokens(word, consumer_complaint_narrative) %>%
+  add_count(word) %>%
+  filter(n >= 50) %>%
+  select(-n)
+
+nested_words <- tidy_complaints %>%
+  nest(words = c(word))
+
+nested_words
+```
+
+ a slide_windows() function  identifies skipgram windows in order to calculate the skipgram probabilities, how often we find each word near each other word. The window_size, which determines the size of the sliding window that moves through the text
+ 
+```{r}
+slide_windows <- function(tbl, window_size) {
+  skipgrams <- slider::slide(
+    tbl, 
+    ~.x, 
+    .after = window_size - 1, 
+    .step = 1, 
+    .complete = TRUE
+  )
+  
+  safe_mutate <- safely(mutate)
+  
+  out <- map2(skipgrams,
+              1:length(skipgrams),
+              ~ safe_mutate(.x, window_id = .y))
+  
+  out %>%
+    transpose() %>%
+    pluck("result") %>%
+    compact() %>%
+    bind_rows()
+}
+```
+
+```{r}
+library(widyr)
+library(furrr)
+
+plan(multisession)  ## for parallel processing
+
+tidy_pmi <- nested_words %>%
+  mutate(words = future_map(words, slide_windows, 4L)) %>%
+  unnest(words) %>%
+  unite(window_id, complaint_id, window_id) %>%
+  pairwise_pmi(word, window_id)
+
+tidy_pmi
+```
+
+We use PMI to measure which words occur together more often than expected based on how often they occurred on their own. When PMI is high, the two words are associated with each other, i.e., likely to occur together. When PMI is low, the two words are not associated with each other, unlikely to occur together.
+
+# 5.3 Exploring CFPB word embeddings
+
+In word embedding, each word can be represented as a numeric vector in this new feature space. A single word is mapped to only one vector
+
+```{r}
+nearest_neighbors <- function(df, token) {
+  df %>%
+    widely(
+      ~ {
+        y <- .[rep(token, nrow(.)), ]
+        res <- rowSums(. * y) / 
+          (sqrt(rowSums(. ^ 2)) * sqrt(sum(.[token, ] ^ 2)))
+        
+        matrix(res, ncol = 1, dimnames = list(x = names(res)))
+      },
+      sort = TRUE
+    )(item1, dimension, value) %>%
+    select(-item2)
+}
+```
+
+This function takes the tidy word embeddings and a word as input, It uses matrix multiplication and sums to calculate the cosine similarity between the word and all the words in the embedding to find which words are closer or farther to the input word. Error is close to the word mistake
+
+```{r}
+tidy_word_vectors %>%
+  nearest_neighbors("error")
+```
+
+The classic and simplest approach to use word embedding is to treat each document as a collection of words and summarize the word embeddings into document embeddings, either using a mean or sum.
+
+```{r}
+word_matrix <- tidy_complaints %>%
+  count(complaint_id, word) %>%
+  cast_sparse(complaint_id, word, n)
+
+embedding_matrix <- tidy_word_vectors %>%
+  cast_sparse(item1, dimension, value)
+
+doc_matrix <- word_matrix %*% embedding_matrix
+
+dim(doc_matrix)
+```
+# 5.4 Use pre-trained word embeddings
+
+If the data set is too small, we cannot train reliable word embeddings. Several pre-trained GloVe vector representations are available in R via the textdata package
+
+```{r}
+library(textdata)
+
+glove6b <- embedding_glove6b(dimensions = 100)
+glove6b
+```
+
+pivot_longer() can be used to transform these word embeddings into a more tidy format
+
+```{r}
+idy_glove <- glove6b %>%
+  pivot_longer(contains("d"),
+               names_to = "dimension") %>%
+  rename(item1 = token)
+
+tidy_glove
+```
+
+The GloVe embeddings do not contain all the tokens in the CPFB complaints, and vice versa, so let’s use inner_join() to match up our data sets.
+
+```{r}
+word_matrix <- tidy_complaints %>%
+  inner_join(by = "word",
+             tidy_glove %>%
+               distinct(item1) %>%
+               rename(word = item1)) %>%
+  count(complaint_id, word) %>%
+  cast_sparse(complaint_id, word, n)
+
+glove_matrix <- tidy_glove %>%
+  inner_join(by = "item1",
+             tidy_complaints %>%
+               distinct(word) %>%
+               rename(item1 = word)) %>%
+  cast_sparse(item1, dimension, value)
+
+doc_matrix <- word_matrix %*% glove_matrix
+
+```
+
+# 6.1 A first regression model
+
+```{r}
+library(tidyverse)
+library(scotus)
+
+scotus_filtered %>%
+  as_tibble()
+```
+
+```{r}
+scotus_filtered %>%
+  mutate(year = as.numeric(year),
+         year = 10 * (year %/% 10)) %>%
+  count(year) %>%
+  ggplot(aes(year, n)) +
+  geom_col() +
+  labs(x = "Year", y = "Number of opinions per decade")
+```
+
+# 6.1.1 Building our first regression model
+
+Use initial_split() to set up how to split the data, and then we use the functions training() and testing() to create the data sets.
+
+```{r}
+library(tidymodels)
+set.seed(1234)
+scotus_split <- scotus_filtered %>%
+  mutate(year = as.numeric(year),
+         text = str_remove_all(text, "'")) %>%
+  initial_split()
+
+scotus_train <- training(scotus_split)
+scotus_test <- testing(scotus_split)
+```
+
+```{r}
+library(textrecipes)
+#  specify in our initial recipe()
+scotus_rec <- recipe(year ~ text, data = scotus_train) %>%
+  # tokenize the text of the court opinions.
+  step_tokenize(text) %>%
+  step_tokenfilter(text, max_tokens = 1e3) %>%
+  # weights each token frequency by the inverse document frequency.
+  step_tfidf(text) %>%
+  step_normalize(all_predictors())
+
+scotus_rec
+```
+
+we can prep() this recipe to estimate all the necessary parameters for each step using the training data and bake() it to apply the steps to data
+
+```{r}
+scotus_prep <- prep(scotus_rec)
+scotus_bake <- bake(scotus_prep, new_data = NULL)
+
+dim(scotus_bake)
+```
+
+There are three components to specifying a model using tidymodels
+
+- the model algorithm 
+- the mode (typically either classification or regression)
+- the computational engine
+
+Then add the model  with add_model() and fit to training by using fit() function
+```{r}
+scotus_wf <- workflow() %>%
+  add_recipe(scotus_rec)
+
+svm_spec <- svm_linear() %>%
+  set_mode("regression") %>%
+  set_engine("LiblineaR")
+
+svm_fit <- scotus_wf %>%
+  add_model(svm_spec) %>%
+  fit(data = scotus_train)
+```
+
+We can access the fit using pull_workflow_fit()
+
+```{r}
+svm_fit %>%
+  pull_workflow_fit() %>% 
+  tidy() %>%
+  arrange(-estimate)
+```
+
+# 6.1.2 Evaluation
+
+if we want to train multiple models and find the best one, we can use resampling Let's create 10-fold cross-validation sets, and use these resampled sets for performance estimates, In this example, 90% of the training data is included in each fold for analysis and the other 10% is held out for assessment.
+
+```{r}
+set.seed(123)
+scotus_folds <- vfold_cv(scotus_train)
+
+scotus_folds
+```
+
+```{r}
+set.seed(123)
+svm_rs <- fit_resamples(
+  scotus_wf %>% add_model(svm_spec),
+  scotus_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+svm_rs
+```
+
+The default performance metrics to be computed for regression models are RMSE
+
+```{r}
+collect_metrics(svm_rs)
+```
+
