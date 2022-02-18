@@ -1,0 +1,495 @@
+---
+title: "week 6"
+output: html_document
+---
+
+# Chapter 7 Classification
+
+- A regression model predicts a numeric or continuous value.
+
+- A classification model predicts a class label or group membership.
+
+```{r}
+library(tidyverse)
+complaints <- read_csv("complaints.csv")
+```
+
+
+```{r}
+glimpse(complaints)
+```
+
+```{r}
+head(complaints$`Consumer complaint narrative`)
+```
+
+XXXX are used to protect personally identifiable information
+
+# 7.1.1 Building our first classification model
+
+```{r}
+library(tidymodels)
+
+set.seed(1234)
+complaints2class <- complaints %>%
+  mutate(product = factor(if_else(
+    Product == paste("Credit reporting, credit repair services,",
+                     "or other personal consumer reports"),
+    "Credit", "Other"
+  )))
+
+# split data into training data and testing data
+complaints_split <- initial_split(complaints2class, strata = product)
+
+complaints_train <- training(complaints_split)
+complaints_test <- testing(complaints_split)
+```
+
+```{r}
+dim(complaints_train)
+```
+
+```{r}
+dim(complaints_test)
+```
+
+```{r}
+complaints_rec <-
+  recipe(product ~ `Consumer complaint narrative`, data = complaints_train)
+```
+
+```{r}
+library(textrecipes)
+
+complaints_rec <- complaints_rec %>%
+  step_tokenize(consumer_complaint_narrative) %>%
+  # keep the 1000 most frequent tokens
+  step_tokenfilter(consumer_complaint_narrative, max_tokens = 1e3) %>%
+  # compute tf-idf
+  step_tfidf(consumer_complaint_narrative)
+```
+
+```{r}
+complaint_wf <- workflow() %>%
+  add_recipe(complaints_rec)
+```
+
+```{r}
+library(discrim)
+nb_spec <- naive_Bayes() %>%
+  set_mode("classification") %>%
+  set_engine("naivebayes")
+
+nb_spec
+```
+
+# add the naive Bayes model to the workflow
+
+```{r}
+nb_fit <- complaint_wf %>%
+  add_model(nb_spec) %>%
+  fit(data = complaints_train)
+```
+
+# 7.1.2 Evaluation
+```{r}
+# create 10-fold cross-validation sets, and use these resampled sets for performance estimates.
+set.seed(234)
+complaints_folds <- vfold_cv(complaints_train)
+
+complaints_folds
+```
+
+```{r}
+nb_wf <- workflow() %>%
+  add_recipe(complaints_rec) %>%
+  add_model(nb_spec)
+
+nb_wf
+```
+
+```{r}
+nb_rs <- fit_resamples(
+  nb_wf,
+  complaints_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+```
+
+# extract the relevant information using collect_metrics() and collect_predictions()
+```{r}
+nb_rs_metrics <- collect_metrics(nb_rs)
+```
+
+
+```{r}
+nb_rs_predictions <- collect_predictions(nb_rs)
+```
+
+```{r}
+nb_rs_metrics
+```
+
+ROC curve shows how well a classification model can distinguish between classes,
+
+```{r}
+nb_rs_predictions %>%
+  group_by(id) %>%
+  roc_curve(truth = product, .pred_Credit) %>%
+  autoplot() +
+  labs(
+    color = NULL,
+    title = "ROC curve for US Consumer Finance Complaints",
+    subtitle = "Each resample fold is shown in a different color"
+  )
+```
+
+The area under each of these curves is the roc_auc metric we have computed. If the curve was close to the diagonal line, then the model’s predictions would be no better than random guessing.
+
+```{r}
+# plot confusion matrix
+conf_mat_resampled(nb_rs, tidy = FALSE) %>%
+  autoplot(type = "heatmap")
+```
+
+7.3 Compare to a lasso classification model
+
+## create lasso regression
+
+```{r}
+lasso_spec <- logistic_reg(penalty = 0.01, mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+lasso_spec
+
+lasso_wf <- workflow() %>%
+  add_recipe(complaints_rec) %>%
+  add_model(lasso_spec)
+
+lasso_wf
+```
+
+## turning lasso regression parameter
+tune() can be treated as a placeholder for the regularization penalty.
+```{r}
+tune_spec <- logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+tune_spec
+```
+
+turn the parameter
+```{r}
+tune_wf <- workflow() %>%
+  add_recipe(complaints_rec) %>%
+  add_model(tune_spec)
+
+set.seed(2020)
+tune_rs <- tune_grid(
+  tune_wf,
+  complaints_folds,
+  grid = lambda_grid,
+  control = control_resamples(save_pred = TRUE)
+)
+
+tune_rs
+```
+
+```{r}
+collect_metrics(tune_rs)
+```
+
+# view the results and select the best model
+```{r}
+tune_rs %>%
+  show_best("roc_auc")
+
+chosen_auc <- tune_rs %>%
+  select_by_one_std_err(metric = "roc_auc", -penalty)
+
+final_lasso <- finalize_workflow(tune_wf, chosen_auc)
+```
+
+# Case study: sparse encoding
+The computational engine can be more efficient when text data is transformed to a sparse matrix
+
+```{r}
+library(hardhat)
+sparse_bp <- default_recipe_blueprint(composition = "dgCMatrix")
+
+sparse_wf <- workflow() %>%
+  add_recipe(complaints_rec, blueprint = sparse_bp) %>%
+  add_model(tune_spec)
+
+sparse_wf
+```
+
+# including non-text data
+
+```{r}
+more_vars_rec <-
+  recipe(product ~ date_received + tags + consumer_complaint_narrative,
+         data = complaints_train)
+
+more_vars_rec <- more_vars_rec %>%
+  # extract the month and day of the week
+  step_date(date_received, features = c("month", "dow"), role = "dates") %>%
+  step_rm(date_received) %>%
+  # convert the new month and day-of-the-week columns to indicator variables
+  step_dummy(has_role("dates"))
+```
+
+It is possible with many data sets to achieve high accuracy just by predicting the majority class all the time, but such a model is not useful in the real world. Accuracy alone is often not a good way to assess the performance of classification models.
+
+
+Chapter 8 Dense neural networks
+```{r}
+library(tidyverse)
+
+kickstarter <- read_csv("data/kickstarter.csv.gz")
+kickstarter
+```
+
+Documents that are longer than this length are truncated (information is thrown away), and documents that are shorter than this length are padded with zeroes (an empty, non-informative value) to get to the chosen sequence length. This sequence length is a hyperparameter of the model.
+
+Preprocessing
+```{r}
+library(textrecipes)
+
+max_words <- 2e4
+max_length <- 30
+
+kick_rec <- recipe(~ blurb, data = kickstarter_train) %>%
+  step_tokenize(blurb) %>%
+  step_tokenfilter(blurb, max_tokens = max_words) %>%
+  step_sequence_onehot(blurb, sequence_length = max_length)
+
+kick_rec
+```
+
+#  One-hot sequence embedding of text
+
+When using step_sequence_onehot() each word is assigned an integer index, and the sequence of tokens is replaced with the corresponding indices. 
+```{r}
+# transforms tokens into a numeric format appropriate for modeling
+recipe(~ text, data = small_data) %>%
+  step_tokenize(text) %>%
+  step_sequence_onehot(text, sequence_length = 6, prefix = "",
+                       padding = "pre", truncating = "post") %>%
+  prep() %>%
+  bake(new_data = NULL, composition = "matrix")
+```
+
+# Building simple flatten dense network
+```{r}
+library(keras)
+# initialize keras model sequential
+dense_model <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_words + 1,
+                  output_dim = 12,
+                  input_length = max_length) %>%
+  layer_flatten() %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+```
+
+# define compile for model
+```{r}
+dense_model %>% compile(
+  optimizer = "adam",
+  loss = "binary_crossentropy",
+  metrics = c("accuracy")
+)
+```
+
+# fit model
+```{r}
+dense_history <- dense_model %>%
+  fit(
+    x = kick_train,
+    y = kickstarter_train$state,
+    batch_size = 512,
+    epochs = 20,
+    validation_split = 0.25,
+    verbose = FALSE
+  )
+```
+
+# visualize the results
+```{r}
+plot(dense_history)
+```
+
+# Evaluation
+create validation split from the training set
+```{r}
+set.seed(234)
+kick_val <- validation_split(kickstarter_train, strata = state)
+kick_val
+```
+
+# get prediction result
+
+```{r}
+val_res <- keras_predict(dense_model, kick_assess, state_assess)
+val_res
+```
+
+# Using pre-trained word embeddings
+```{r}
+library(textdata)
+# obtain glove embedding
+glove6b <- embedding_glove6b(dimensions = 50) %>% select(1:13)
+glove6b
+```
+
+#  LSTM model
+
+# preprocessing the data
+```{r}
+library(textrecipes)
+
+max_words <- 2e4
+max_length <- 30
+
+kick_rec <- recipe(~ blurb, data = kickstarter_train) %>%
+  step_tokenize(blurb) %>%
+  step_tokenfilter(blurb, max_tokens = max_words) %>%
+  step_sequence_onehot(blurb, sequence_length = max_length)
+
+kick_prep <- prep(kick_rec)
+kick_train <- bake(kick_prep)
+```
+
+# create LSTMs
+```{r}
+library(keras)
+
+lstm_mod <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_words + 1, output_dim = 32) %>%
+  layer_lstm(units = 32) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+lstm_mod
+```
+
+# set up complile
+```{r}
+lstm_mod %>%
+  compile(
+    optimizer = "adam",
+    loss = "binary_crossentropy",
+    metrics = c("accuracy")
+  )
+```
+
+# fit the model
+```{r}
+lstm_history <- lstm_mod %>%
+  fit(
+    kick_train,
+    kickstarter_train$state,
+    epochs = 10,
+    # set apart a fraction of the training data for evaluation and assessment.
+    validation_split = 0.25,
+    batch_size = 512,
+    verbose = FALSE
+  )
+
+lstm_history
+```
+
+# visulize the performance
+```{r}
+plot(lstm_history)
+```
+
+# Evaluation
+
+```{r}
+set.seed(234)
+kick_val <- validation_split(kickstarter_train, strata = state)
+kick_val
+
+kick_analysis <- bake(kick_prep, new_data = analysis(kick_val$splits[[1]]),
+                      composition = "matrix")
+```
+
+# we can use dropout to prevent overfitting
+```{r}
+# fit data to validation set
+lstm_mod <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_words + 1, output_dim = 32) %>%
+  layer_lstm(units = 32, dropout = 0.4, recurrent_dropout = 0.4) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+lstm_mod %>%
+  compile(
+    optimizer = "adam",
+    loss = "binary_crossentropy",
+    metrics = c("accuracy")
+  )
+
+val_history <- lstm_mod %>%
+  fit(
+    kick_analysis,
+    state_analysis,
+    epochs = 10,
+    validation_data = list(kick_assess, state_assess),
+    batch_size = 512,
+    verbose = FALSE
+  )
+
+val_history
+```
+
+# evalute performance of the model in validation set
+```{r}
+val_res <- keras_predict(lstm_mod, kick_assess, state_assess)
+val_res %>% metrics(state, .pred_class, .pred_1)
+```
+
+# bidirectional LSTM
+
+```{r}
+bilstm_mod <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_words + 1, output_dim = 32) %>%
+  bidirectional(layer_lstm(units = 32, dropout = 0.4,
+                           recurrent_dropout = 0.4)) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+bilstm_mod %>%
+  compile(
+    optimizer = "adam",
+    loss = "binary_crossentropy",
+    metrics = c("accuracy")
+  )
+
+bilstm_history <- bilstm_mod %>%
+  fit(
+    kick_analysis,
+    state_analysis,
+    epochs = 10,
+    validation_data = list(kick_assess, state_assess),
+    batch_size = 512,
+    verbose = FALSE
+  )
+
+bilstm_history
+```
+
+# stacking LSTM layers
+stacking LSTM can increase the ability of a network to represent the data well.
+```{r}
+stacked_mod <- keras_model_sequential() %>%
+  layer_embedding(input_dim = max_words + 1, output_dim = 32) %>%
+  layer_lstm(units = 32, dropout = 0.4, recurrent_dropout = 0.4,
+             return_sequences = TRUE) %>%
+  layer_lstm(units = 32, dropout = 0.4, recurrent_dropout = 0.4) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+```
+
+# 
